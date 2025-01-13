@@ -3,7 +3,7 @@
  * Plugin Name: WooCommerce Stock Manager by SITE GUARD 365
  * Plugin URI: https://siteguard365.com/
  * Description: Display and manage WooCommerce product stock (including variations) with advanced features like POS integration, export, and reporting.
- * Version: 2.0.0
+ * Version: 2.0.1
  * Author: SITE GUARD 365
  * Author URI: https://siteguard365.com/
  * Requires at least: 5.8
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 // Define constants
 define( 'SG365_WC_STOCK_MANAGER', __FILE__ );
-define( 'SG365_WC_VERSION', '2.0.0' );
+define( 'SG365_WC_VERSION', '2.0.1' );
 define( 'SG365_WC_PLUGIN_DIR', plugin_dir_path( SG365_WC_STOCK_MANAGER ) );
 define( 'SG365_WC_PLUGIN_URL', plugin_dir_url( SG365_WC_STOCK_MANAGER ) );
 
@@ -132,6 +132,46 @@ class SG365_Stock_Manager {
                 <button type="submit" class="button button-primary">Export Stock Data</button>
             </form>
         </div>';
+    }
+
+    /**
+     * Generate stock rows
+     */
+    public function get_stock_rows( $filter, $low_stock_threshold, $full_stock_threshold ) {
+        $products = wc_get_products( [ 'limit' => -1, 'status' => 'publish' ] );
+        $rows = '';
+
+        foreach ( $products as $product ) {
+            if ( ! $product->managing_stock() ) {
+                continue;
+            }
+
+            $stock_quantity = $product->get_stock_quantity();
+            $row_color = '';
+
+            if ( $stock_quantity <= 0 ) {
+                $row_color = 'style="background-color: #f8d7da;"'; // Red for out of stock
+                if ( $filter === 'full' || $filter === 'low' ) continue;
+            } elseif ( $stock_quantity < $low_stock_threshold ) {
+                $row_color = 'style="background-color: #fff3cd;"'; // Yellow for low stock
+                if ( $filter === 'full' || $filter === 'out' ) continue;
+            } elseif ( $stock_quantity >= $full_stock_threshold ) {
+                $row_color = 'style="background-color: #d4edda;"'; // Green for full stock
+                if ( $filter === 'low' || $filter === 'out' ) continue;
+            }
+
+            $edit_link = admin_url( 'post.php?post=' . $product->get_id() . '&action=edit' );
+            $stock_value = $stock_quantity * $product->get_price();
+
+            $rows .= '<tr ' . $row_color . '>
+                <td>' . esc_html( $product->get_name() ) . '</td>
+                <td>' . esc_html( $stock_quantity ) . '</td>
+                <td><a href="' . esc_url( $edit_link ) . '">Edit Stock</a></td>
+                <td>' . wc_price( $stock_value ) . '</td>
+            </tr>';
+        }
+
+        return $rows;
     }
 
     /**
