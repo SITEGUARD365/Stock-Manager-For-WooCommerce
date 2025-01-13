@@ -2,8 +2,8 @@
 /**
  * Plugin Name: WooCommerce Stock Manager by SITE GUARD 365
  * Plugin URI: https://siteguard365.com/
- * Description: Display and manage WooCommerce product stock (including variations) in one place with advanced filtering options.
- * Version: 1.1.0
+ * Description: Display and manage WooCommerce product stock (including variations) with advanced features like POS integration, export, and reporting.
+ * Version: 2.0.0
  * Author: SITE GUARD 365
  * Author URI: https://siteguard365.com/
  * Requires at least: 5.8
@@ -18,10 +18,11 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-// Define plugin constants
+// Define constants
 define( 'SG365_WC_STOCK_MANAGER', __FILE__ );
-
-define( 'SG365_WC_VERSION', '1.1.0' );
+define( 'SG365_WC_VERSION', '2.0.0' );
+define( 'SG365_WC_PLUGIN_DIR', plugin_dir_path( SG365_WC_STOCK_MANAGER ) );
+define( 'SG365_WC_PLUGIN_URL', plugin_dir_url( SG365_WC_STOCK_MANAGER ) );
 
 class SG365_Stock_Manager {
 
@@ -30,8 +31,17 @@ class SG365_Stock_Manager {
         add_action( 'admin_menu', [ $this, 'register_admin_menu' ] );
         add_action( 'admin_init', [ $this, 'register_plugin_settings' ] );
 
-        // Display stock management page
+        // Enqueue scripts and styles
         add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_scripts' ] );
+
+        // Dashboard widgets
+        add_action( 'wp_dashboard_setup', [ $this, 'add_dashboard_widgets' ] );
+
+        // Handle file exports
+        add_action( 'admin_post_sg365_export_stock', [ $this, 'handle_stock_export' ] );
+
+        // Automatic plugin updates
+        add_filter( 'upgrader_post_install', [ $this, 'handle_plugin_update' ], 10, 3 );
     }
 
     /**
@@ -50,11 +60,11 @@ class SG365_Stock_Manager {
     }
 
     /**
-     * Enqueue required scripts
+     * Enqueue scripts and styles
      */
     public function enqueue_scripts() {
-        wp_enqueue_style( 'sg365-stock-manager-css', plugins_url( '/assets/styles.css', SG365_WC_STOCK_MANAGER ), [], SG365_WC_VERSION );
-        wp_enqueue_script( 'sg365-stock-manager-js', plugins_url( '/assets/scripts.js', SG365_WC_STOCK_MANAGER ), [ 'jquery' ], SG365_WC_VERSION, true );
+        wp_enqueue_style( 'sg365-stock-manager-css', SG365_WC_PLUGIN_URL . 'assets/styles.css', [], SG365_WC_VERSION );
+        wp_enqueue_script( 'sg365-stock-manager-js', SG365_WC_PLUGIN_URL . 'assets/scripts.js', [ 'jquery' ], SG365_WC_VERSION, true );
     }
 
     /**
@@ -108,6 +118,7 @@ class SG365_Stock_Manager {
                             <th>Product Name</th>
                             <th>Live Stock Quantity</th>
                             <th>Edit Stock</th>
+                            <th>Stock Value</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -115,20 +126,29 @@ class SG365_Stock_Manager {
                     </tbody>
                 </table>
             </div>
+
+            <form method="post" action="' . admin_url( 'admin-post.php' ) . '">
+                <input type="hidden" name="action" value="sg365_export_stock">
+                <button type="submit" class="button button-primary">Export Stock Data</button>
+            </form>
         </div>';
     }
 
     /**
-     * Get stock rows for all products and variations with filters
-     *
-     * @param string $filter
-     * @param int $low_stock_threshold
-     * @param int $full_stock_threshold
-     * @return string
+     * Handle stock export
      */
-    private function get_stock_rows( $filter, $low_stock_threshold, $full_stock_threshold ) {
+    public function handle_stock_export() {
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_die( __( 'Unauthorized', 'sg365' ) );
+        }
+
         $products = wc_get_products( [ 'limit' => -1, 'status' => 'publish' ] );
-        $rows     = '';
+        $filename = 'stock_data_' . date( 'Y-m-d' ) . '.csv';
+        header( 'Content-Type: text/csv' );
+        header( 'Content-Disposition: attachment;filename=' . $filename );
+
+        $output = fopen( 'php://output', 'w' );
+        fputcsv( $output, [ 'Product Name', 'Stock Quantity', 'Stock Value' ] );
 
         foreach ( $products as $product ) {
             if ( ! $product->managing_stock() ) {
@@ -136,51 +156,66 @@ class SG365_Stock_Manager {
             }
 
             $stock_quantity = $product->get_stock_quantity();
+            $stock_value    = $stock_quantity * $product->get_price();
 
-            if ( $filter === 'low' && ( $stock_quantity >= $low_stock_threshold || $stock_quantity <= 0 ) ) {
-                continue;
-            }
-
-            if ( $filter === 'full' && $stock_quantity < $full_stock_threshold ) {
-                continue;
-            }
-
-            if ( $filter === 'out' && $stock_quantity > 0 ) {
-                continue;
-            }
-
-            $rows .= $this->render_stock_row( $product, $low_stock_threshold, $full_stock_threshold );
+            fputcsv( $output, [ $product->get_name(), $stock_quantity, $stock_value ] );
         }
 
-        return $rows;
+        fclose( $output );
+        exit;
     }
 
     /**
-     * Render a single stock row with color coding
-     *
-     * @param WC_Product $product
-     * @param int $low_stock_threshold
-     * @param int $full_stock_threshold
-     * @return string
+     * Add dashboard widgets
      */
-    private function render_stock_row( $product, $low_stock_threshold, $full_stock_threshold ) {
-        $edit_url       = admin_url( 'post.php?post=' . $product->get_id() . '&action=edit' );
-        $stock_quantity = $product->get_stock_quantity();
-        $stock_class    = '';
+    public function add_dashboard_widgets() {
+        wp_add_dashboard_widget(
+            'sg365_stock_summary',
+            'Stock Summary',
+            [ $this, 'render_dashboard_widget' ]
+        );
+    }
 
-        if ( $stock_quantity <= 0 ) {
-            $stock_class = 'stock-out';
-        } elseif ( $stock_quantity < $low_stock_threshold ) {
-            $stock_class = 'stock-low';
-        } elseif ( $stock_quantity >= $full_stock_threshold ) {
-            $stock_class = 'stock-full';
+    /**
+     * Render dashboard widget
+     */
+    public function render_dashboard_widget() {
+        $products = wc_get_products( [ 'limit' => -1, 'status' => 'publish' ] );
+        $low_stock_count = 0;
+        $out_of_stock_count = 0;
+        $full_stock_count = 0;
+
+        foreach ( $products as $product ) {
+            if ( ! $product->managing_stock() ) {
+                continue;
+            }
+
+            $stock_quantity = $product->get_stock_quantity();
+            if ( $stock_quantity <= 0 ) {
+                $out_of_stock_count++;
+            } elseif ( $stock_quantity < get_option( 'sg365_low_stock_threshold', 5 ) ) {
+                $low_stock_count++;
+            } else {
+                $full_stock_count++;
+            }
         }
 
-        return '<tr class="' . esc_attr( $stock_class ) . '">
-            <td>' . esc_html( $product->get_name() ) . '</td>
-            <td>' . esc_html( $stock_quantity ) . '</td>
-            <td><a href="' . esc_url( $edit_url ) . '" class="button">Edit Stock</a></td>
-        </tr>';
+        echo '<ul>
+            <li>Low Stock Products: ' . esc_html( $low_stock_count ) . '</li>
+            <li>Out of Stock Products: ' . esc_html( $out_of_stock_count ) . '</li>
+            <li>Full Stock Products: ' . esc_html( $full_stock_count ) . '</li>
+        </ul>';
+    }
+
+    /**
+     * Handle plugin updates
+     */
+    public function handle_plugin_update( $response, $hook_extra, $result ) {
+        if ( isset( $hook_extra['plugin'] ) && $hook_extra['plugin'] === plugin_basename( SG365_WC_STOCK_MANAGER ) ) {
+            // Handle migration tasks if needed
+            update_option( 'sg365_wc_last_update', time() );
+        }
+        return $response;
     }
 }
 
