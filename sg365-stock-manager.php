@@ -3,7 +3,7 @@
  * Plugin Name: WooCommerce Stock Manager by SITE GUARD 365
  * Plugin URI: https://siteguard365.com/
  * Description: Display and manage WooCommerce product stock (including variations) with advanced features like POS integration, export, reporting, analytics, and REST API support.
- * Version: 2.1.0
+ * Version: 2.2.0
  * Author: SITE GUARD 365
  * Author URI: https://siteguard365.com/
  * Requires at least: 5.8
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 // Define constants
 define( 'SG365_WC_STOCK_MANAGER', __FILE__ );
-define( 'SG365_WC_VERSION', '2.1.0' );
+define( 'SG365_WC_VERSION', '2.2.0' );
 define( 'SG365_WC_PLUGIN_DIR', plugin_dir_path( SG365_WC_STOCK_MANAGER ) );
 define( 'SG365_WC_PLUGIN_URL', plugin_dir_url( SG365_WC_STOCK_MANAGER ) );
 
@@ -131,6 +131,27 @@ class SG365_Stock_Manager {
                 </table>
             </div>
         </div>';
+    }
+
+    /**
+     * Fetch stock rows for stock table
+     */
+    public function get_stock_rows() {
+        $products = wc_get_products( [ 'limit' => -1, 'status' => 'publish' ] );
+        $rows = '';
+
+        foreach ( $products as $product ) {
+            if ( $product->managing_stock() ) {
+                $rows .= '<tr>
+                    <td>' . esc_html( $product->get_name() ) . '</td>
+                    <td>' . esc_html( $product->get_stock_quantity() ) . '</td>
+                    <td><a href="' . esc_url( admin_url( 'post.php?post=' . $product->get_id() . '&action=edit' ) ) . '">Edit</a></td>
+                    <td>' . wc_price( $product->get_stock_quantity() * $product->get_price() ) . '</td>
+                </tr>';
+            }
+        }
+
+        return $rows;
     }
 
     /**
