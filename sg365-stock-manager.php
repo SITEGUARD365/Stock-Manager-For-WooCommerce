@@ -2,8 +2,8 @@
 /**
  * Plugin Name: WooCommerce Stock Manager by SITE GUARD 365
  * Plugin URI: https://siteguard365.com/
- * Description: Display and manage WooCommerce product stock (including variations) with advanced features like POS integration, export, and reporting.
- * Version: 2.0.1
+ * Description: Display and manage WooCommerce product stock (including variations) with advanced features like POS integration, export, reporting, analytics, and REST API support.
+ * Version: 2.1.0
  * Author: SITE GUARD 365
  * Author URI: https://siteguard365.com/
  * Requires at least: 5.8
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 // Define constants
 define( 'SG365_WC_STOCK_MANAGER', __FILE__ );
-define( 'SG365_WC_VERSION', '2.0.1' );
+define( 'SG365_WC_VERSION', '2.1.0' );
 define( 'SG365_WC_PLUGIN_DIR', plugin_dir_path( SG365_WC_STOCK_MANAGER ) );
 define( 'SG365_WC_PLUGIN_URL', plugin_dir_url( SG365_WC_STOCK_MANAGER ) );
 
@@ -37,11 +37,14 @@ class SG365_Stock_Manager {
         // Dashboard widgets
         add_action( 'wp_dashboard_setup', [ $this, 'add_dashboard_widgets' ] );
 
-        // Handle file exports
-        add_action( 'admin_post_sg365_export_stock', [ $this, 'handle_stock_export' ] );
+        // REST API Support
+        add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
 
-        // Automatic plugin updates
-        add_filter( 'upgrader_post_install', [ $this, 'handle_plugin_update' ], 10, 3 );
+        // Notifications
+        add_action( 'woocommerce_low_stock', [ $this, 'notify_low_stock' ] );
+
+        // Developer hooks and filters
+        do_action( 'sg365_stock_manager_initialized' );
     }
 
     /**
@@ -81,7 +84,11 @@ class SG365_Stock_Manager {
     public function render_stock_page() {
         $low_stock_threshold  = get_option( 'sg365_low_stock_threshold', 5 );
         $full_stock_threshold = get_option( 'sg365_full_stock_threshold', 50 );
-        $filter = isset( $_GET['stock_filter'] ) ? sanitize_text_field( $_GET['stock_filter'] ) : 'all';
+
+        // Check user capabilities
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_die( __( 'You do not have sufficient permissions to access this page.', 'sg365' ) );
+        }
 
         echo '<div class="wrap">
             <h1>Stock Manager</h1>
@@ -102,12 +109,9 @@ class SG365_Stock_Manager {
                 ' . submit_button( 'Save Settings' ) . '
             </form>
 
-            <h2>Filters</h2>
-            <div class="stock-filters">
-                <a href="?page=sg365-stock-manager&stock_filter=low" class="button">Low Stock</a>
-                <a href="?page=sg365-stock-manager&stock_filter=full" class="button">Full Stock</a>
-                <a href="?page=sg365-stock-manager&stock_filter=out" class="button">Out of Stock</a>
-                <a href="?page=sg365-stock-manager&stock_filter=all" class="button">All Products</a>
+            <h2>Analytics and Insights</h2>
+            <div id="analytics-insights">
+                ' . $this->get_analytics_data() . '
             </div>
 
             <h2>Manage Stock</h2>
@@ -122,141 +126,78 @@ class SG365_Stock_Manager {
                         </tr>
                     </thead>
                     <tbody>
-                        ' . $this->get_stock_rows( $filter, $low_stock_threshold, $full_stock_threshold ) . '
+                        ' . $this->get_stock_rows() . '
                     </tbody>
                 </table>
             </div>
-
-            <form method="post" action="' . admin_url( 'admin-post.php' ) . '">
-                <input type="hidden" name="action" value="sg365_export_stock">
-                <button type="submit" class="button button-primary">Export Stock Data</button>
-            </form>
         </div>';
     }
 
     /**
-     * Generate stock rows
+     * REST API Routes
      */
-    public function get_stock_rows( $filter, $low_stock_threshold, $full_stock_threshold ) {
+    public function register_rest_routes() {
+        register_rest_route( 'sg365/v1', '/stock', [
+            'methods' => 'GET',
+            'callback' => [ $this, 'get_stock_data' ],
+            'permission_callback' => function() {
+                return current_user_can( 'manage_woocommerce' );
+            }
+        ]);
+    }
+
+    public function get_stock_data() {
         $products = wc_get_products( [ 'limit' => -1, 'status' => 'publish' ] );
-        $rows = '';
+        $data = [];
 
         foreach ( $products as $product ) {
-            if ( ! $product->managing_stock() ) {
-                continue;
+            if ( $product->managing_stock() ) {
+                $data[] = [
+                    'name' => $product->get_name(),
+                    'stock' => $product->get_stock_quantity()
+                ];
             }
-
-            $stock_quantity = $product->get_stock_quantity();
-            $row_color = '';
-
-            if ( $stock_quantity <= 0 ) {
-                $row_color = 'style="background-color: #f8d7da;"'; // Red for out of stock
-                if ( $filter === 'full' || $filter === 'low' ) continue;
-            } elseif ( $stock_quantity < $low_stock_threshold ) {
-                $row_color = 'style="background-color: #fff3cd;"'; // Yellow for low stock
-                if ( $filter === 'full' || $filter === 'out' ) continue;
-            } elseif ( $stock_quantity >= $full_stock_threshold ) {
-                $row_color = 'style="background-color: #d4edda;"'; // Green for full stock
-                if ( $filter === 'low' || $filter === 'out' ) continue;
-            }
-
-            $edit_link = admin_url( 'post.php?post=' . $product->get_id() . '&action=edit' );
-            $stock_value = $stock_quantity * $product->get_price();
-
-            $rows .= '<tr ' . $row_color . '>
-                <td>' . esc_html( $product->get_name() ) . '</td>
-                <td>' . esc_html( $stock_quantity ) . '</td>
-                <td><a href="' . esc_url( $edit_link ) . '">Edit Stock</a></td>
-                <td>' . wc_price( $stock_value ) . '</td>
-            </tr>';
         }
 
-        return $rows;
+        return rest_ensure_response( $data );
     }
 
     /**
-     * Handle stock export
+     * Notify on low stock
      */
-    public function handle_stock_export() {
-        if ( ! current_user_can( 'manage_woocommerce' ) ) {
-            wp_die( __( 'Unauthorized', 'sg365' ) );
-        }
+    public function notify_low_stock( $product ) {
+        $admin_email = get_option( 'admin_email' );
+        wp_mail( $admin_email, 'Low Stock Alert', 'The product "' . $product->get_name() . '" is running low on stock.' );
+    }
 
+    /**
+     * Developer Hook Examples
+     */
+    public function add_developer_hooks() {
+        do_action( 'sg365_before_stock_update' );
+        // Your logic here
+        do_action( 'sg365_after_stock_update' );
+    }
+
+    /**
+     * Analytics Data
+     */
+    public function get_analytics_data() {
         $products = wc_get_products( [ 'limit' => -1, 'status' => 'publish' ] );
-        $filename = 'stock_data_' . date( 'Y-m-d' ) . '.csv';
-        header( 'Content-Type: text/csv' );
-        header( 'Content-Disposition: attachment;filename=' . $filename );
-
-        $output = fopen( 'php://output', 'w' );
-        fputcsv( $output, [ 'Product Name', 'Stock Quantity', 'Stock Value' ] );
+        $total_stock = 0;
+        $total_value = 0;
 
         foreach ( $products as $product ) {
-            if ( ! $product->managing_stock() ) {
-                continue;
-            }
-
-            $stock_quantity = $product->get_stock_quantity();
-            $stock_value    = $stock_quantity * $product->get_price();
-
-            fputcsv( $output, [ $product->get_name(), $stock_quantity, $stock_value ] );
-        }
-
-        fclose( $output );
-        exit;
-    }
-
-    /**
-     * Add dashboard widgets
-     */
-    public function add_dashboard_widgets() {
-        wp_add_dashboard_widget(
-            'sg365_stock_summary',
-            'Stock Summary',
-            [ $this, 'render_dashboard_widget' ]
-        );
-    }
-
-    /**
-     * Render dashboard widget
-     */
-    public function render_dashboard_widget() {
-        $products = wc_get_products( [ 'limit' => -1, 'status' => 'publish' ] );
-        $low_stock_count = 0;
-        $out_of_stock_count = 0;
-        $full_stock_count = 0;
-
-        foreach ( $products as $product ) {
-            if ( ! $product->managing_stock() ) {
-                continue;
-            }
-
-            $stock_quantity = $product->get_stock_quantity();
-            if ( $stock_quantity <= 0 ) {
-                $out_of_stock_count++;
-            } elseif ( $stock_quantity < get_option( 'sg365_low_stock_threshold', 5 ) ) {
-                $low_stock_count++;
-            } else {
-                $full_stock_count++;
+            if ( $product->managing_stock() ) {
+                $total_stock += $product->get_stock_quantity();
+                $total_value += $product->get_stock_quantity() * $product->get_price();
             }
         }
 
-        echo '<ul>
-            <li>Low Stock Products: ' . esc_html( $low_stock_count ) . '</li>
-            <li>Out of Stock Products: ' . esc_html( $out_of_stock_count ) . '</li>
-            <li>Full Stock Products: ' . esc_html( $full_stock_count ) . '</li>
-        </ul>';
+        return '<p>Total Stock: ' . esc_html( $total_stock ) . '</p>
+                <p>Total Stock Value: ' . wc_price( $total_value ) . '</p>';
     }
 
-    /**
-     * Handle plugin updates
-     */
-    public function handle_plugin_update( $response, $hook_extra, $result ) {
-        if ( isset( $hook_extra['plugin'] ) && $hook_extra['plugin'] === plugin_basename( SG365_WC_STOCK_MANAGER ) ) {
-            // Handle migration tasks if needed
-            update_option( 'sg365_wc_last_update', time() );
-        }
-        return $response;
-    }
 }
 
 new SG365_Stock_Manager();
